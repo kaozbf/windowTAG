@@ -54,7 +54,7 @@ enum {
     M_ICON0 = 111, M_ICON1, M_ICON2,              // 图标 小/中/大
     M_SORT0 = 121, M_SORT1, M_SORT2,               // 排序 添加顺序/名称升/名称降
     M_THEME0 = 131, M_THEME1,                      // 主题 深色/浅色
-    L_OPEN = 201, L_ADMIN, L_LOC, L_EDIT, L_DEL,
+    L_OPEN = 201, L_ADMIN, L_PS, L_LOC, L_EDIT, L_DEL,
     T_ADDLINK = 301, T_REN, T_DEL,
     BG_ADDTAG = 501, BG_ADDLINK,
     TR_SHOW = 601, TR_EXIT
@@ -162,7 +162,7 @@ static void GdipCard(gp::Graphics&, const RECT&, FLOAT, COLORREF);
 static void DrawDlgFace(HWND, HDC);
 static bool EnableRoundedCorner(HWND, COLORREF);
 static void ApplyRoundRegion(HWND, bool);
-static void LaunchLink(Node* n, bool admin);
+static void LaunchLink(Node* n, int mode);            // 0=默认 1=管理员 2=PowerShell
 static void OpenEditor(int type, int parent, const Node* src);
 static void HideWin();
 static void ShowMainMenu();
@@ -399,16 +399,24 @@ static HICON IconFor(const Node& n) {
 }
 
 // ---------------- 启动链接 ----------------
-static void LaunchLink(Node* n, bool admin) {
-    if (admin && n->path.find(L"://") != std::wstring::npos)
-        admin = false;                                    // runas 对 URL 协议无效，忽略之
+static void LaunchLink(Node* n, int mode) {
+    if (mode == 1 && n->path.find(L"://") != std::wstring::npos)
+        mode = 0;                                         // runas 对 URL 协议无效，忽略之
     SHELLEXECUTEINFOW sei = {};
     sei.cbSize = sizeof sei;
     sei.fMask = SEE_MASK_NOASYNC | SEE_MASK_UNICODE;
     sei.hwnd = g_hwnd;
-    sei.lpVerb = admin ? L"runas" : nullptr;
-    sei.lpFile = n->path.c_str();
-    if (!n->params.empty()) sei.lpParameters = n->params.c_str();
+    std::wstring ps;
+    if (mode == 2) {                                      // powershell -NoProfile -File "路径" 参数
+        ps = L"-NoProfile -ExecutionPolicy Bypass -File \"" + n->path + L"\"";
+        if (!n->params.empty()) ps += L' ' + n->params;
+        sei.lpFile = L"powershell.exe";
+        sei.lpParameters = ps.c_str();
+    } else {
+        sei.lpVerb = mode == 1 ? L"runas" : nullptr;
+        sei.lpFile = n->path.c_str();
+        if (!n->params.empty()) sei.lpParameters = n->params.c_str();
+    }
     sei.nShow = SW_SHOWNORMAL;
     if (ShellExecuteExW(&sei)) {
         if (g_hideAfterLaunch) HideWin();
@@ -1206,13 +1214,16 @@ static void ShowLinkMenu(Node* n, POINT scr) {
     std::vector<MItem> m;
     MAdd(m, L_OPEN, L"打开");
     MAdd(m, L_ADMIN, L"以管理员身份运行");
+    if (n->path.find(L"://") == std::wstring::npos)       // PowerShell 只对本地文件有意义
+        MAdd(m, L_PS, L"以 PowerShell 方式执行");
     if (hasDir) MAdd(m, L_LOC, L"打开所在位置");
     MSep(m);
     MAdd(m, L_EDIT, L"编辑");
     MAdd(m, L_DEL, L"删除");
     switch (MPopup(std::move(m), scr)) {
-    case L_OPEN: LaunchLink(n, false); break;
-    case L_ADMIN: LaunchLink(n, true); break;
+    case L_OPEN: LaunchLink(n, 0); break;
+    case L_ADMIN: LaunchLink(n, 1); break;
+    case L_PS: LaunchLink(n, 2); break;
     case L_LOC: {
         std::wstring dir = n->path.substr(0, n->path.find_last_of(L"\\/"));
         ShellExecuteW(g_hwnd, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -2264,7 +2275,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             InvalidateRect(h, nullptr, FALSE);
         } else if (g_pressIdx >= 0 && g_pressIdx < (int)g_view.size()) {
             Node* n = const_cast<Node*>(g_view[g_pressIdx]);
-            LaunchLink(n, n->admin != 0);                 // 单击 = 默认方式（勾选管理员则提权）
+            LaunchLink(n, n->admin);                      // 单击 = 默认方式（勾选管理员则提权）
         }
         g_pressIdx = -1;
         return 0;
